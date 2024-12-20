@@ -1,0 +1,17 @@
+vehicle_type,pollutant,emissions
+Total,nox,10788.241161496195
+Car-Diesel,nox,5495.965207585198
+LGV-Diesel,nox,4853.635237265769
+Car-Petrol,nox,2278.4517052678143
+HGV-Rigid,nox,1932.2538258470395
+Non-TfL-Bus-or-Coach,nox,1736.0960143536086
+TfL-Bus,nox,964.0659898715351
+HGV-Articulated,nox,903.1766114415439
+Taxi,nox,895.8221667149247
+PHV-Diesel,nox,457.135457725047
+Motorcycle,nox,186.85209541407414
+PHV-Petrol,nox,81.79351597551323
+LGV-Petrol,nox,23.9145457916639
+Car-Electric,nox,0.0
+LGV-Electric,nox,0.0
+PHV-Electric,nox,0.0

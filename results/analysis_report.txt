@@ -1,0 +1,61 @@
+=== London Air Quality Analysis Report ===
+Generated on: 2024-12-19 22:39:20
+
+
+TEMPORAL ANALYSIS
+--------------------------------------------------
+   year pollutant       sum  mean   std
+0  2019       nox  15876.61  0.01  0.03
+1  2025       nox   9144.93  0.01  0.02
+2  2030       nox   5575.86  0.00  0.02
+
+Key Statistics:
+Total emissions: 30,597.40
+--------------------------------------------------
+
+VEHICLE ANALYSIS
+--------------------------------------------------
+   vehicle_type  year      sum  mean  count
+0    Car-Diesel  2019  3160.84  0.04  75482
+1    Car-Diesel  2025  1615.03  0.02  77977
+2    Car-Diesel  2030   720.09  0.01  78798
+3  Car-Electric  2019     0.00  0.00  79381
+4  Car-Electric  2025     0.00  0.00  79423
+
+Key Statistics:
+Total emissions: 30,597.38
+--------------------------------------------------
+
+POLLUTANT ANALYSIS
+--------------------------------------------------
+  pollutant  year       sum  mean   std
+0       nox  2019  15876.61  0.01  0.03
+1       nox  2025   9144.93  0.01  0.02
+2       nox  2030   5575.86  0.00  0.02
+
+Key Statistics:
+Total emissions: 30,597.40
+--------------------------------------------------
+
+TOP_CONTRIBUTORS ANALYSIS
+--------------------------------------------------
+  vehicle_type pollutant     emissions
+0        Total       nox  10788.241161
+1   Car-Diesel       nox   5495.965208
+2   LGV-Diesel       nox   4853.635237
+3   Car-Petrol       nox   2278.451705
+4    HGV-Rigid       nox   1932.253826
+
+Key Statistics:
+--------------------------------------------------
+
+VISUALIZATIONS GENERATED
+--------------------------------------------------
+1. Temporal Trends: Line plot showing emission trends over time
+2. Vehicle Emissions: Bar plot comparing emissions by vehicle type
+3. Pollutant Distribution: Box plot showing emission distributions
+4. Emissions Heat Map: Heat map of vehicle types vs pollutants
+5. Yearly Distribution: Violin plot of emissions distribution by year
+6. Vehicle Contribution: Pie chart of vehicle type contributions
+7. Vehicle Trends: Line plot showing trends for top vehicle categories
+8. Yearly Pollutant Comparison: Bar plot of yearly emissions by pollutant
