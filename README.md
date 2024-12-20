@@ -2,9 +2,9 @@
 ## A Big Data Approach Using PySpark
 
 ### Team Members
-- Madhumathi Lingala (2313542)
-- Neehar Salimetla (2313536)
-- Yogesh Naga Sai Prabhu Karpurapu (2313537)
+- Madhumathi Lingala 
+- Neehar Salimetla 
+- Yogesh Naga Sai Prabhu Karpurapu 
 
 
 ### Project Overview
