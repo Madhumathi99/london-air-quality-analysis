@@ -1,10 +1,14 @@
-import pandas as pd
-import numpy as np
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pyspark.sql.window import Window
+import matplotlib.pyplot as plt
+import seaborn as sns
 import os
 import json
 from datetime import datetime
-import matplotlib.pyplot as plt
-import seaborn as sns
+import pandas as pd
+import numpy as np
 
 class LondonAirQualityAnalysis:
     def __init__(self, input_dir, output_dir):
@@ -13,40 +17,42 @@ class LondonAirQualityAnalysis:
         self.results_dir = os.path.join(output_dir, 'results')
         self.viz_dir = os.path.join(self.results_dir, 'visualizations')
         
-        # Create necessary directories
+        # Create directories
         os.makedirs(self.results_dir, exist_ok=True)
         os.makedirs(self.viz_dir, exist_ok=True)
         
-        # Set style for visualizations
-        plt.style.use('default')  # Using default style instead of seaborn
-        sns.set_theme()  # Set seaborn theme
+        # Initialize Spark
+        self.spark = SparkSession.builder \
+            .appName("London Air Quality Analysis") \
+            .config("spark.driver.memory", "4g") \
+            .config("spark.executor.memory", "4g") \
+            .config("spark.sql.shuffle.partitions", "100") \
+            .getOrCreate()
+        
+        # Set visualization style
+        plt.style.use('default')
+        sns.set_theme()
 
-    def _preprocess_emissions_data(self, df):
-        """Preprocess the emissions data"""
-        print("Starting data preprocessing...")
+    def _define_schema(self):
+        """Define schema for the emissions data"""
+        schema = StructType([
+            StructField("TOID", StringType(), True),
+            StructField("pollutant", StringType(), True),
+            StructField("emissions_units", StringType(), True)
+        ])
         
-        # Get all year columns
-        year_cols = []
-        for year in ['2019', '2025', '2030']:
-            year_cols.extend([col for col in df.columns if col.endswith(year)])
+        # Add vehicle columns for each year
+        vehicle_types = ['Car-Diesel', 'Car-Electric', 'Car-Petrol', 'LGV-Diesel', 
+                        'LGV-Electric', 'HGV-Rigid', 'HGV-Articulated', 'TfL-Bus',
+                        'Non-TfL-Bus-or-Coach', 'Taxi', 'Motorcycle']
+        years = ['2019', '2025', '2030']
         
-        # Melt the dataframe
-        id_vars = ['TOID', 'pollutant', 'emissions-units']
-        melted_df = pd.melt(
-            df,
-            id_vars=id_vars,
-            value_vars=year_cols,
-            var_name='vehicle_year',
-            value_name='emissions'
-        )
-        
-        # Extract information
-        melted_df['year'] = melted_df['vehicle_year'].str.extract(r'(\d{4})').astype(int)
-        melted_df['vehicle_type'] = melted_df['vehicle_year'].str.split('-').str[1:-1].str.join('-')
-        melted_df['emissions'] = pd.to_numeric(melted_df['emissions'], errors='coerce')
-        
-        print("Columns after preprocessing:", melted_df.columns.tolist())
-        return melted_df
+        for vehicle in vehicle_types:
+            for year in years:
+                field_name = f"Road_{vehicle}_{year}"
+                schema.add(field_name, DoubleType(), True)
+                
+        return schema
 
     def load_data(self):
         """Load the emissions data"""
@@ -54,81 +60,155 @@ class LondonAirQualityAnalysis:
         file_path = os.path.join(self.input_dir, "LAEI2019-nox-pm-co2-major-roads-link-emissions.xlsx")
         
         try:
-            df = pd.read_excel(file_path, engine='openpyxl')
-            print(f"Loaded {len(df)} rows")
-            print("Original columns:", df.columns.tolist())
+            # Read Excel file
+            df = self.spark.read.format("com.crealytics.spark.excel") \
+                .option("header", "true") \
+                .option("inferSchema", "false") \
+                .schema(self._define_schema()) \
+                .load(file_path)
             
-            processed_df = self._preprocess_emissions_data(df)
-            print(f"Processed data shape: {processed_df.shape}")
+            # Transform data structure
+            vehicle_cols = [c for c in df.columns if c.startswith("Road_")]
+            stack_expr = []
+            for col in vehicle_cols:
+                parts = col.split("_")
+                year = parts[-1]
+                vehicle_type = "_".join(parts[1:-1])
+                stack_expr.extend([lit(year), lit(vehicle_type), col])
             
-            return processed_df
+            n_cols = len(vehicle_cols)
+            unpivot_expr = f"stack({n_cols}, {', '.join(['?'] * (n_cols * 3))}) as (year, vehicle_type, emissions)"
+            
+            df_transformed = df.selectExpr(
+                "TOID", 
+                "pollutant", 
+                "emissions_units",
+                unpivot_expr
+            )
+            
+            # Convert data types
+            df_final = df_transformed \
+                .withColumn("year", col("year").cast(IntegerType())) \
+                .withColumn("emissions", col("emissions").cast(DoubleType()))
+            
+            print(f"Loaded and transformed {df_final.count()} records")
+            return df_final
+            
         except Exception as e:
             print(f"Error loading data: {str(e)}")
             raise
 
     def clean_data(self, df):
-        """Clean the data"""
+        """Clean the data using Spark operations"""
         print("\nCleaning data...")
         
-        # Remove rows with null emissions
-        df_cleaned = df.dropna(subset=['emissions'])
+        # Remove null emissions
+        df_cleaned = df.na.drop(subset=["emissions"])
         
-        # Remove outliers using percentiles
-        lower_bound = df_cleaned['emissions'].quantile(0.01)
-        upper_bound = df_cleaned['emissions'].quantile(0.99)
-        mask = (df_cleaned['emissions'] >= lower_bound) & (df_cleaned['emissions'] <= upper_bound)
-        df_cleaned = df_cleaned[mask]
+        # Calculate percentiles for outlier removal
+        quantiles = df_cleaned.approxQuantile("emissions", [0.01, 0.99], 0.01)
         
-        print(f"Data shape after cleaning: {df_cleaned.shape}")
+        # Filter outliers
+        df_cleaned = df_cleaned.filter(
+            (col("emissions") >= quantiles[0]) & 
+            (col("emissions") <= quantiles[1])
+        )
+        
+        print(f"Records after cleaning: {df_cleaned.count()}")
         return df_cleaned
 
     def analyze_data(self, df):
-        """Perform various analyses"""
+        """Perform comprehensive analysis using Spark SQL"""
         print("\nPerforming analysis...")
         analyses = {}
+        
+        # Register temp view for SQL operations
+        df.createOrReplaceTempView("emissions_data")
 
         # 1. Temporal Analysis
-        analyses['temporal'] = df.groupby(['year', 'pollutant'])['emissions'].agg([
-            'sum', 'mean', 'std'
-        ]).round(2).reset_index()
+        temporal_sql = """
+            SELECT 
+                year,
+                pollutant,
+                ROUND(SUM(emissions), 2) as sum,
+                ROUND(AVG(emissions), 2) as mean,
+                ROUND(STDDEV(emissions), 2) as std
+            FROM emissions_data
+            GROUP BY year, pollutant
+            ORDER BY year, pollutant
+        """
+        analyses['temporal'] = self.spark.sql(temporal_sql)
 
-        # 2. Vehicle Type Analysis
-        analyses['vehicle'] = df.groupby(['vehicle_type', 'year'])['emissions'].agg([
-            'sum', 'mean', 'count'
-        ]).round(2).reset_index()
+        # 2. Vehicle Analysis
+        vehicle_sql = """
+            SELECT 
+                vehicle_type,
+                year,
+                ROUND(SUM(emissions), 2) as sum,
+                ROUND(AVG(emissions), 2) as mean,
+                COUNT(*) as count
+            FROM emissions_data
+            GROUP BY vehicle_type, year
+            ORDER BY vehicle_type, year
+        """
+        analyses['vehicle'] = self.spark.sql(vehicle_sql)
 
         # 3. Pollutant Analysis
-        analyses['pollutant'] = df.groupby(['pollutant', 'year'])['emissions'].agg([
-            'sum', 'mean', 'std'
-        ]).round(2).reset_index()
+        pollutant_sql = """
+            SELECT 
+                pollutant,
+                year,
+                ROUND(SUM(emissions), 2) as sum,
+                ROUND(AVG(emissions), 2) as mean,
+                ROUND(STDDEV(emissions), 2) as std
+            FROM emissions_data
+            GROUP BY pollutant, year
+            ORDER BY pollutant, year
+        """
+        analyses['pollutant'] = self.spark.sql(pollutant_sql)
 
         # 4. Top Contributors
-        analyses['top_contributors'] = df.groupby(['vehicle_type', 'pollutant'])['emissions'].sum()\
-            .sort_values(ascending=False)\
-            .reset_index()
+        contributors_sql = """
+            SELECT 
+                vehicle_type,
+                pollutant,
+                ROUND(SUM(emissions), 2) as emissions
+            FROM emissions_data
+            GROUP BY vehicle_type, pollutant
+            ORDER BY emissions DESC
+        """
+        analyses['top_contributors'] = self.spark.sql(contributors_sql)
 
         return analyses
 
     def create_visualizations(self, df, analyses):
-        """Create and save visualizations"""
+        """Create visualizations using Spark DataFrames"""
         print("\nGenerating visualizations...")
         
         try:
-            # 1. Temporal Trends Line Plot
+            # Convert Spark DataFrames to Pandas for visualization
+            temporal_pd = analyses['temporal'].toPandas()
+            vehicle_pd = analyses['vehicle'].toPandas()
+            pollutant_pd = analyses['pollutant'].toPandas()
+            contributors_pd = analyses['top_contributors'].toPandas()
+            
+            # 1. Temporal Trends
             plt.figure(figsize=(12, 6))
-            sns.lineplot(data=analyses['temporal'], x='year', y='sum', hue='pollutant', marker='o')
+            for pollutant in temporal_pd['pollutant'].unique():
+                data = temporal_pd[temporal_pd['pollutant'] == pollutant]
+                plt.plot(data['year'], data['sum'], marker='o', label=pollutant)
             plt.title('Emissions Trends Over Time')
             plt.xlabel('Year')
             plt.ylabel('Total Emissions')
-            plt.xticks(analyses['temporal']['year'].unique())
+            plt.legend()
             plt.tight_layout()
             plt.savefig(os.path.join(self.viz_dir, '1_temporal_trends.png'))
             plt.close()
 
-            # 2. Vehicle Type Emissions Bar Plot
+            # 2. Vehicle Emissions by Year
             plt.figure(figsize=(15, 7))
-            vehicle_pivot = analyses['vehicle'].pivot(index='vehicle_type', columns='year', values='sum')
-            vehicle_pivot.plot(kind='bar', width=0.8)
+            pivot_data = vehicle_pd.pivot(index='vehicle_type', columns='year', values='sum')
+            pivot_data.plot(kind='bar')
             plt.title('Emissions by Vehicle Type and Year')
             plt.xlabel('Vehicle Type')
             plt.ylabel('Total Emissions')
@@ -138,9 +218,10 @@ class LondonAirQualityAnalysis:
             plt.savefig(os.path.join(self.viz_dir, '2_vehicle_emissions.png'))
             plt.close()
 
-            # 3. Pollutant Distribution Box Plot
+            # 3. Pollutant Distribution
             plt.figure(figsize=(10, 6))
-            sns.boxplot(data=df, x='pollutant', y='emissions')
+            df_pd = df.select('pollutant', 'emissions').toPandas()
+            sns.boxplot(data=df_pd, x='pollutant', y='emissions')
             plt.title('Distribution of Emissions by Pollutant Type')
             plt.xlabel('Pollutant')
             plt.ylabel('Emissions')
@@ -149,22 +230,19 @@ class LondonAirQualityAnalysis:
             plt.savefig(os.path.join(self.viz_dir, '3_pollutant_distribution.png'))
             plt.close()
 
-            # 4. Top Contributors Heat Map
+            # 4. Heat Map
             plt.figure(figsize=(12, 8))
-            top_pivot = analyses['top_contributors'].pivot(
-                index='vehicle_type', 
-                columns='pollutant', 
-                values='emissions'
-            )
-            sns.heatmap(top_pivot, annot=True, fmt='.0f', cmap='YlOrRd')
+            pivot_table = contributors_pd.pivot(index='vehicle_type', columns='pollutant', values='emissions')
+            sns.heatmap(pivot_table, annot=True, fmt='.0f', cmap='YlOrRd')
             plt.title('Emissions Heat Map: Vehicle Types vs Pollutants')
             plt.tight_layout()
             plt.savefig(os.path.join(self.viz_dir, '4_emissions_heatmap.png'))
             plt.close()
 
-            # 5. Year-wise Emissions Distribution
+            # 5. Yearly Distribution
             plt.figure(figsize=(12, 6))
-            sns.violinplot(data=df, x='year', y='emissions')
+            df_pd = df.select('year', 'emissions').toPandas()
+            sns.violinplot(data=df_pd, x='year', y='emissions')
             plt.title('Distribution of Emissions Across Years')
             plt.xlabel('Year')
             plt.ylabel('Emissions')
@@ -172,25 +250,25 @@ class LondonAirQualityAnalysis:
             plt.savefig(os.path.join(self.viz_dir, '5_yearly_distribution.png'))
             plt.close()
 
-            # 6. Vehicle Type Contribution Pie Chart
+            # 6. Vehicle Type Contribution
             plt.figure(figsize=(10, 8))
-            vehicle_total = analyses['vehicle'].groupby('vehicle_type')['sum'].sum()
-            plt.pie(vehicle_total, labels=vehicle_total.index, autopct='%1.1f%%')
+            total_by_vehicle = vehicle_pd.groupby('vehicle_type')['sum'].sum()
+            plt.pie(total_by_vehicle, labels=total_by_vehicle.index, autopct='%1.1f%%')
             plt.title('Vehicle Type Contribution to Total Emissions')
             plt.axis('equal')
             plt.tight_layout()
             plt.savefig(os.path.join(self.viz_dir, '6_vehicle_contribution_pie.png'))
             plt.close()
 
-            # 7. Emission Trends by Vehicle Category
+            # 7. Top 5 Vehicle Emission Trends
             plt.figure(figsize=(15, 8))
-            top_vehicles = df.groupby('vehicle_type')['emissions'].sum().nlargest(5).index
-            vehicle_trends = df[df['vehicle_type'].isin(top_vehicles)]
-            sns.lineplot(data=vehicle_trends, x='year', y='emissions', hue='vehicle_type')
+            top_5_vehicles = vehicle_pd.groupby('vehicle_type')['sum'].sum().nlargest(5).index
+            for vehicle in top_5_vehicles:
+                data = vehicle_pd[vehicle_pd['vehicle_type'] == vehicle]
+                plt.plot(data['year'], data['sum'], marker='o', label=vehicle)
             plt.title('Emission Trends for Top 5 Vehicle Categories')
             plt.xlabel('Year')
             plt.ylabel('Emissions')
-            plt.xticks(df['year'].unique())
             plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
             plt.tight_layout()
             plt.savefig(os.path.join(self.viz_dir, '7_vehicle_trends.png'))
@@ -198,13 +276,8 @@ class LondonAirQualityAnalysis:
 
             # 8. Yearly Pollutant Comparison
             plt.figure(figsize=(12, 6))
-            yearly_comparison = df.pivot_table(
-                values='emissions', 
-                index='year',
-                columns='pollutant', 
-                aggfunc='mean'
-            )
-            yearly_comparison.plot(kind='bar', width=0.8)
+            pivot_data = pollutant_pd.pivot(index='year', columns='pollutant', values='mean')
+            pivot_data.plot(kind='bar', width=0.8)
             plt.title('Average Emissions by Year and Pollutant')
             plt.xlabel('Year')
             plt.ylabel('Average Emissions')
@@ -219,32 +292,30 @@ class LondonAirQualityAnalysis:
             print(f"Error creating visualization: {str(e)}")
             raise
 
-    def save_results(self, analyses):
-        """Save analysis results"""
-        print("\nSaving results...")
-        
-        for name, df in analyses.items():
-            output_file = os.path.join(self.results_dir, f'{name}_analysis.csv')
-            df.to_csv(output_file, index=False)
-            print(f"Saved {name} analysis to {output_file}")
-
     def generate_report(self, analyses):
-        """Generate a summary report"""
+        """Generate analysis report using Spark DataFrame results"""
         print("\nGenerating report...")
         
         report = []
         report.append("=== London Air Quality Analysis Report ===")
         report.append(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         
-        for name, df in analyses.items():
+        # Convert Spark DataFrames to Pandas for reporting
+        for name, spark_df in analyses.items():
+            pd_df = spark_df.toPandas()
+            
             report.append(f"\n{name.upper()} ANALYSIS")
             report.append("-" * 50)
-            report.append(df.head().to_string())
+            report.append(pd_df.head().to_string())
             report.append("\nKey Statistics:")
-            if 'sum' in df.columns:
-                report.append(f"Total emissions: {df['sum'].sum():,.2f}")
+            
+            if 'sum' in pd_df.columns:
+                total = pd_df['sum'].sum()
+                report.append(f"Total emissions: {total:,.2f}")
+            
             report.append("-" * 50)
         
+        # Add visualization descriptions
         report.append("\nVISUALIZATIONS GENERATED")
         report.append("-" * 50)
         report.append("1. Temporal Trends: Line plot showing emission trends over time")
@@ -260,6 +331,21 @@ class LondonAirQualityAnalysis:
         with open(report_path, 'w') as f:
             f.write('\n'.join(report))
         print(f"Report saved to {report_path}")
+
+    def save_results(self, analyses):
+        """Save analysis results"""
+        print("\nSaving results...")
+        
+        for name, spark_df in analyses.items():
+            # Save as CSV
+            output_file = os.path.join(self.results_dir, f'{name}_analysis.csv')
+            spark_df.toPandas().to_csv(output_file, index=False)
+            
+            # Save as Parquet
+            parquet_file = os.path.join(self.results_dir, f'{name}_analysis.parquet')
+            spark_df.write.mode('overwrite').parquet(parquet_file)
+            
+            print(f"Saved {name} analysis to CSV and Parquet formats")
 
     def run_pipeline(self):
         """Execute the complete analysis pipeline"""
@@ -290,6 +376,9 @@ class LondonAirQualityAnalysis:
         except Exception as e:
             print(f"Error in pipeline: {str(e)}")
             raise
+        finally:
+            # Stop Spark session
+            self.spark.stop()
 
 def main():
     # Define directories
