@@ -5,7 +5,7 @@
 - Madhumathi Lingala (2313542)
 - Neehar Salimetla (2313536)
 - Yogesh Naga Sai Prabhu Karpurapu (2313537)
-- Sai Prabhu Karpurapu (2313544)
+
 
 ### Project Overview
 This project analyzes London's vehicle emissions data from 2019-2030 using PySpark and Python visualization libraries. It includes comprehensive analysis of emission trends, vehicle type contributions, and future projections.
